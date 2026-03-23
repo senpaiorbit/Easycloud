@@ -1,6 +1,7 @@
-name = "telegram-cloud-vault"
+name = "easycloud"
 main = "worker.js"
-compatibility_date = "2025-03-01"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
 
 [[kv_namespaces]]
 binding = "easycloud"
@@ -8,3 +9,6 @@ id = "9a3d8edafc324885b99ab20b5b3619f0"
 
 [vars]
 TELEGRAM_CHAT_ID = "7183111659"
+
+# Set BOT_TOKEN as a secret:
+# wrangler secret put BOT_TOKEN
