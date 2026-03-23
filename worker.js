@@ -1,417 +1,1128 @@
 const MAX_RETRIES = 6;
+const MAX_CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
 
 export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const p = url.pathname;
-
-    if (request.method === "OPTIONS") return cors(204);
-
-    const routes = {
-      "POST /upload_chunk": uploadChunk,
-      "GET /get_chunk": getChunk,
-      "POST /save_meta": saveMeta,
-      "GET /meta": getMeta,
-      "GET /list": listFiles,
-      "POST /delete": deleteFile,
-      "POST /rename": renameFile,
-      "POST /mkdir": mkdir,
-      "POST /move": moveFile,
-      "POST /remote_upload": remoteUpload,
-    };
-
-    const key = `${request.method} ${p}`;
-    const handler = routes[key];
-    if (!handler) return json({ error: "Not found" }, 404);
-
+  async fetch(request, env, ctx) {
     try {
+      const url = new URL(request.url);
+      const path = url.pathname.replace(/\/$/, "") || "/";
+      const method = request.method;
+
+      // Handle CORS preflight
+      if (method === "OPTIONS") {
+        return corsResponse(null, 204);
+      }
+
+      // Route handlers
+      const routes = {
+        "POST /upload_chunk": uploadChunk,
+        "GET /get_chunk": getChunk,
+        "POST /save_meta": saveMeta,
+        "GET /meta": getMeta,
+        "GET /list": listFiles,
+        "POST /delete": deleteFile,
+        "POST /rename": renameFile,
+        "POST /mkdir": mkdir,
+        "POST /move": moveFile,
+        "POST /remote_upload": remoteUpload,
+        "GET /health": healthCheck,
+        "POST /init": initFS,
+      };
+
+      const routeKey = `${method} ${path}`;
+      const handler = routes[routeKey];
+
+      if (!handler) {
+        return jsonResponse({ error: "Not found", path, method }, 404);
+      }
+
       return await handler(request, env, url);
-    } catch (e) {
-      return json({ error: e.message || "Internal error" }, 500);
+    } catch (err) {
+      console.error("Worker error:", err);
+      return jsonResponse(
+        {
+          error: err.message || "Internal server error",
+          stack: err.stack?.split("\n").slice(0, 3),
+        },
+        500
+      );
     }
-  }
+  },
 };
 
-function cors(status = 200) {
-  return new Response(null, {
-    status,
-    headers: ch()
-  });
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORS & RESPONSE HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-function ch() {
+function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Max-Age": "86400",
   };
 }
 
-function json(data, s = 200) {
-  return new Response(JSON.stringify(data), {
-    status: s,
-    headers: { "Content-Type": "application/json", ...ch() }
+function corsResponse(body, status = 200, extraHeaders = {}) {
+  return new Response(body, {
+    status,
+    headers: {
+      ...corsHeaders(),
+      ...extraHeaders,
+    },
   });
 }
 
-function stream(body, contentType, contentLength) {
-  const h = new Headers(ch());
-  h.set("Content-Type", contentType || "application/octet-stream");
-  if (contentLength) h.set("Content-Length", contentLength);
-  h.set("Cache-Control", "private, max-age=7200");
-  return new Response(body, { status: 200, headers: h });
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders(),
+    },
+  });
 }
 
-function sanitize(n) {
-  return (n || "file").replace(/[\/\\?%*:|"<>]/g, "_").replace(/\.\./g, "_").slice(0, 200);
+function streamResponse(body, contentType, contentLength) {
+  const headers = new Headers(corsHeaders());
+  headers.set("Content-Type", contentType || "application/octet-stream");
+  if (contentLength) {
+    headers.set("Content-Length", String(contentLength));
+  }
+  headers.set("Cache-Control", "private, max-age=7200");
+  return new Response(body, { status: 200, headers });
 }
 
-function validId(id) {
-  return typeof id === "string" && /^[A-Za-z0-9_\-]+$/.test(id);
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILITY FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function sanitizeFilename(name) {
+  if (!name || typeof name !== "string") return "file";
+  return name
+    .replace(/[\/\\?%*:|"<>]/g, "_")
+    .replace(/\.\./g, "_")
+    .replace(/^\.+/, "")
+    .trim()
+    .slice(0, 200) || "file";
 }
 
-async function sha256(buf) {
-  const d = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+function isValidFileId(fileId) {
+  if (!fileId || typeof fileId !== "string") return false;
+  // Telegram file_id can contain: letters, numbers, underscore, hyphen, and sometimes special chars
+  // They are base64-like, so we allow a broad set
+  if (fileId.length < 10 || fileId.length > 200) return false;
+  // Block obvious path traversal
+  if (fileId.includes("..") || fileId.includes("/") || fileId.includes("\\")) return false;
+  return true;
+}
+
+function isValidUUID(id) {
+  if (!id || typeof id !== "string") return false;
+  return /^[a-f0-9\-]{36}$/i.test(id) || /^[A-Za-z0-9_\-]+$/.test(id);
+}
+
+async function computeSHA256(buffer) {
+  let arrayBuffer;
+  if (buffer instanceof ArrayBuffer) {
+    arrayBuffer = buffer;
+  } else if (buffer instanceof Uint8Array) {
+    arrayBuffer = buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength
+    );
+  } else if (typeof buffer === "object" && buffer.arrayBuffer) {
+    arrayBuffer = await buffer.arrayBuffer();
+  } else {
+    throw new Error("Invalid buffer type for SHA256");
+  }
+
+  const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function tg(env, method, body, isForm = false, attempt = 0) {
-  const ep = `https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`;
-  const opts = { method: "POST" };
+// ═══════════════════════════════════════════════════════════════════════════════
+// TELEGRAM API HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
 
-  if (isForm) {
-    opts.body = body;
+async function telegramAPI(env, method, body, isFormData = false, attempt = 0) {
+  const botToken = env.BOT_TOKEN;
+  if (!botToken) {
+    throw new Error("BOT_TOKEN not configured");
+  }
+
+  const endpoint = `https://api.telegram.org/bot${botToken}/${method}`;
+  const options = { method: "POST" };
+
+  if (isFormData) {
+    options.body = body;
   } else {
-    opts.headers = { "Content-Type": "application/json" };
-    opts.body = JSON.stringify(body);
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
   }
 
-  const res = await fetch(ep, opts);
-
-  if (res.status === 429 && attempt < MAX_RETRIES) {
-    let wait = 1000 * 2 ** attempt;
-    try {
-      const j = await res.json();
-      if (j?.parameters?.retry_after) wait = j.parameters.retry_after * 1000;
-    } catch (_) {}
-    await sleep(wait);
-    return tg(env, method, body, isForm, attempt + 1);
+  let response;
+  try {
+    response = await fetch(endpoint, options);
+  } catch (err) {
+    if (attempt < MAX_RETRIES) {
+      await sleep(1000 * Math.pow(2, attempt));
+      return telegramAPI(env, method, body, isFormData, attempt + 1);
+    }
+    throw new Error(`Telegram network error: ${err.message}`);
   }
 
-  if (!res.ok && attempt < MAX_RETRIES) {
-    await sleep(1000 * 2 ** attempt);
-    return tg(env, method, body, isForm, attempt + 1);
+  // Handle rate limiting
+  if (response.status === 429) {
+    if (attempt < MAX_RETRIES) {
+      let waitTime = 1000 * Math.pow(2, attempt);
+      try {
+        const errorData = await response.clone().json();
+        if (errorData?.parameters?.retry_after) {
+          waitTime = errorData.parameters.retry_after * 1000;
+        }
+      } catch (_) {}
+      console.log(`Rate limited, waiting ${waitTime}ms`);
+      await sleep(waitTime);
+      return telegramAPI(env, method, body, isFormData, attempt + 1);
+    }
+    throw new Error("Telegram rate limit exceeded after retries");
   }
 
-  const data = await res.json();
-  if (!data.ok) throw new Error(`TG: ${JSON.stringify(data)}`);
+  // Handle other errors
+  if (!response.ok) {
+    if (attempt < MAX_RETRIES && response.status >= 500) {
+      await sleep(1000 * Math.pow(2, attempt));
+      return telegramAPI(env, method, body, isFormData, attempt + 1);
+    }
+    const errorText = await response.text();
+    throw new Error(`Telegram API error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  if (!data.ok) {
+    throw new Error(`Telegram returned error: ${JSON.stringify(data)}`);
+  }
+
   return data;
 }
 
-async function retryFetch(url, opts = {}, attempts = MAX_RETRIES) {
-  for (let i = 0; i < attempts; i++) {
+async function fetchWithRetry(url, options = {}, maxAttempts = MAX_RETRIES) {
+  let lastError;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const r = await fetch(url, opts);
-      if (r.status === 429 || r.status >= 500) {
-        await sleep(Math.min(30000, 1000 * 2 ** i));
+      const response = await fetch(url, options);
+
+      if (response.status === 429 || response.status >= 500) {
+        const waitTime = Math.min(30000, 1000 * Math.pow(2, attempt));
+        await sleep(waitTime);
         continue;
       }
-      return r;
-    } catch (e) {
-      if (i === attempts - 1) throw e;
-      await sleep(1000 * 2 ** i);
+
+      return response;
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts - 1) {
+        await sleep(1000 * Math.pow(2, attempt));
+      }
     }
   }
-  throw new Error("retryFetch exhausted");
+
+  throw lastError || new Error("Fetch failed after retries");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE SYSTEM (KV-BASED)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function createRootFolder() {
+  return {
+    id: "root",
+    name: "My Files",
+    type: "folder",
+    children: [],
+    createdAt: Date.now(),
+  };
+}
+
+async function getFileSystem(env) {
+  if (!env.VAULT_KV) {
+    throw new Error("VAULT_KV not configured");
+  }
+
+  try {
+    const raw = await env.VAULT_KV.get("fs:tree");
+    if (!raw) {
+      const root = createRootFolder();
+      await env.VAULT_KV.put("fs:tree", JSON.stringify(root));
+      return root;
+    }
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("Error reading FS:", err);
+    return createRootFolder();
+  }
+}
+
+async function saveFileSystem(env, tree) {
+  if (!env.VAULT_KV) {
+    throw new Error("VAULT_KV not configured");
+  }
+  await env.VAULT_KV.put("fs:tree", JSON.stringify(tree));
+}
+
+function findNodeById(tree, id) {
+  if (!tree || !id) return null;
+  if (tree.id === id) return tree;
+
+  if (Array.isArray(tree.children)) {
+    for (const child of tree.children) {
+      const found = findNodeById(child, id);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+function findParentNode(tree, targetId) {
+  if (!tree || !targetId) return null;
+
+  if (Array.isArray(tree.children)) {
+    for (const child of tree.children) {
+      if (child.id === targetId) {
+        return tree;
+      }
+      const found = findParentNode(child, targetId);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+function collectAllFileIds(node, ids = []) {
+  if (!node) return ids;
+
+  if (node.type === "file" && node.id) {
+    ids.push(node.id);
+  }
+
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      collectAllFileIds(child, ids);
+    }
+  }
+
+  return ids;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROUTE HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function healthCheck(request, env) {
+  const checks = {
+    worker: true,
+    kv: false,
+    telegram: false,
+  };
+
+  // Check KV
+  try {
+    if (env.VAULT_KV) {
+      await env.VAULT_KV.get("health_check_test");
+      checks.kv = true;
+    }
+  } catch (_) {}
+
+  // Check Telegram
+  try {
+    if (env.BOT_TOKEN) {
+      const res = await telegramAPI(env, "getMe", {});
+      checks.telegram = !!res?.result?.id;
+    }
+  } catch (_) {}
+
+  return jsonResponse({
+    ok: true,
+    checks,
+    timestamp: Date.now(),
+  });
+}
+
+async function initFS(request, env) {
+  const tree = await getFileSystem(env);
+  return jsonResponse({
+    ok: true,
+    message: "File system initialized",
+    root: tree,
+  });
 }
 
 // ─── UPLOAD CHUNK ───
 async function uploadChunk(request, env) {
-  const form = await request.formData();
-  const chunk = form.get("chunk");
-  const index = Number(form.get("index"));
-  const name = sanitize(form.get("filename"));
-  const expectedHash = form.get("hash");
-  const uploadId = form.get("uploadId");
-
-  if (!chunk || !(chunk instanceof File)) return json({ error: "Missing chunk" }, 400);
-
-  const buf = await chunk.arrayBuffer();
-  const hash = await sha256(buf);
-
-  if (expectedHash && hash !== expectedHash) {
-    return json({ error: "Hash mismatch" }, 400);
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid form data: " + err.message }, 400);
   }
 
-  const fd = new FormData();
-  fd.append("chat_id", env.TELEGRAM_CHAT_ID);
-  fd.append("document", new Blob([buf]), `${name}.part${index}`);
-  fd.append("disable_content_type_detection", "true");
+  const chunk = formData.get("chunk");
+  const indexStr = formData.get("index");
+  const filename = formData.get("filename");
+  const expectedHash = formData.get("hash");
+  const uploadId = formData.get("uploadId");
 
-  const r = await tg(env, "sendDocument", fd, true);
-  const doc = r?.result?.document;
-  if (!doc?.file_id) return json({ error: "No file_id" }, 500);
+  // Validate inputs
+  if (!chunk) {
+    return jsonResponse({ error: "Missing chunk" }, 400);
+  }
 
-  return json({
+  const index = parseInt(indexStr, 10);
+  if (isNaN(index) || index < 0) {
+    return jsonResponse({ error: "Invalid chunk index" }, 400);
+  }
+
+  const safeName = sanitizeFilename(filename);
+
+  // Get chunk data
+  let chunkBuffer;
+  try {
+    if (chunk instanceof Blob || (chunk && typeof chunk.arrayBuffer === "function")) {
+      chunkBuffer = await chunk.arrayBuffer();
+    } else {
+      return jsonResponse({ error: "Invalid chunk type" }, 400);
+    }
+  } catch (err) {
+    return jsonResponse({ error: "Failed to read chunk: " + err.message }, 400);
+  }
+
+  // Validate chunk size
+  if (chunkBuffer.byteLength > MAX_CHUNK_SIZE) {
+    return jsonResponse({ error: `Chunk too large. Max: ${MAX_CHUNK_SIZE} bytes` }, 400);
+  }
+
+  if (chunkBuffer.byteLength === 0) {
+    return jsonResponse({ error: "Empty chunk" }, 400);
+  }
+
+  // Compute hash
+  const computedHash = await computeSHA256(chunkBuffer);
+
+  // Verify hash if provided
+  if (expectedHash && computedHash !== expectedHash) {
+    return jsonResponse(
+      {
+        error: "Hash mismatch",
+        expected: expectedHash,
+        computed: computedHash,
+      },
+      400
+    );
+  }
+
+  // Prepare Telegram upload
+  const chatId = env.TELEGRAM_CHAT_ID;
+  if (!chatId) {
+    return jsonResponse({ error: "TELEGRAM_CHAT_ID not configured" }, 500);
+  }
+
+  const formDataTG = new FormData();
+  formDataTG.append("chat_id", chatId);
+  formDataTG.append(
+    "document",
+    new Blob([chunkBuffer], { type: "application/octet-stream" }),
+    `${safeName}.part${index}`
+  );
+  formDataTG.append("disable_content_type_detection", "true");
+
+  // Add caption with metadata
+  const caption = JSON.stringify({
+    uploadId: uploadId || "unknown",
+    index,
+    filename: safeName,
+    hash: computedHash,
+    size: chunkBuffer.byteLength,
+    timestamp: Date.now(),
+  }).slice(0, 1024);
+  formDataTG.append("caption", caption);
+
+  // Upload to Telegram
+  let tgResponse;
+  try {
+    tgResponse = await telegramAPI(env, "sendDocument", formDataTG, true);
+  } catch (err) {
+    return jsonResponse({ error: "Telegram upload failed: " + err.message }, 502);
+  }
+
+  const document = tgResponse?.result?.document;
+  if (!document?.file_id) {
+    return jsonResponse(
+      { error: "Telegram did not return file_id", response: tgResponse },
+      500
+    );
+  }
+
+  return jsonResponse({
     ok: true,
     index,
-    file_id: doc.file_id,
-    hash,
-    size: doc.file_size || chunk.size
+    file_id: document.file_id,
+    file_unique_id: document.file_unique_id,
+    hash: computedHash,
+    size: document.file_size || chunkBuffer.byteLength,
   });
 }
 
 // ─── GET CHUNK (STREAM) ───
 async function getChunk(request, env, url) {
   const fileId = url.searchParams.get("file_id");
-  if (!validId(fileId)) return json({ error: "Invalid file_id" }, 400);
 
-  const r = await tg(env, "getFile", { file_id: fileId });
-  const fp = r?.result?.file_path;
-  if (!fp || fp.includes("..")) return json({ error: "Bad path" }, 400);
+  if (!fileId) {
+    return jsonResponse({ error: "Missing file_id parameter" }, 400);
+  }
 
-  const tgUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fp}`;
-  const upstream = await retryFetch(tgUrl);
-  if (!upstream.ok) return json({ error: "TG fetch failed" }, 502);
+  if (!isValidFileId(fileId)) {
+    return jsonResponse({ error: "Invalid file_id format" }, 400);
+  }
 
-  return stream(
+  // Get file path from Telegram
+  let fileData;
+  try {
+    fileData = await telegramAPI(env, "getFile", { file_id: fileId });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to get file info: " + err.message }, 502);
+  }
+
+  const filePath = fileData?.result?.file_path;
+  if (!filePath) {
+    return jsonResponse({ error: "Telegram did not return file_path" }, 500);
+  }
+
+  // Security check
+  if (filePath.includes("..") || filePath.startsWith("/")) {
+    return jsonResponse({ error: "Invalid file path" }, 400);
+  }
+
+  // Stream file from Telegram
+  const downloadUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`;
+
+  let upstream;
+  try {
+    upstream = await fetchWithRetry(downloadUrl);
+  } catch (err) {
+    return jsonResponse({ error: "Failed to fetch from Telegram: " + err.message }, 502);
+  }
+
+  if (!upstream.ok) {
+    return jsonResponse(
+      { error: `Telegram returned ${upstream.status}` },
+      upstream.status >= 500 ? 502 : upstream.status
+    );
+  }
+
+  return streamResponse(
     upstream.body,
     upstream.headers.get("Content-Type"),
     upstream.headers.get("Content-Length")
   );
 }
 
-// ─── FILE SYSTEM (KV-BASED) ───
-async function getFS(env) {
-  const raw = await env.VAULT_KV.get("fs:tree");
-  return raw ? JSON.parse(raw) : { name: "root", type: "folder", children: [], id: "root" };
-}
-
-async function putFS(env, tree) {
-  await env.VAULT_KV.put("fs:tree", JSON.stringify(tree));
-}
-
-function findNode(tree, id) {
-  if (tree.id === id) return tree;
-  if (tree.children) {
-    for (const c of tree.children) {
-      const found = findNode(c, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function findParent(tree, id) {
-  if (tree.children) {
-    for (const c of tree.children) {
-      if (c.id === id) return tree;
-      const found = findParent(c, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
+// ─── SAVE METADATA ───
 async function saveMeta(request, env) {
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
+  }
+
   const id = body.id || crypto.randomUUID();
   const parentId = body.parentId || "root";
-  const name = sanitize(body.filename);
+  const filename = sanitizeFilename(body.filename);
 
-  const meta = {
+  // Validate required fields
+  if (!body.chunks || !Array.isArray(body.chunks)) {
+    return jsonResponse({ error: "Missing or invalid chunks array" }, 400);
+  }
+
+  if (body.chunks.length === 0) {
+    return jsonResponse({ error: "Chunks array is empty" }, 400);
+  }
+
+  // Validate each chunk has required fields
+  for (let i = 0; i < body.chunks.length; i++) {
+    const chunk = body.chunks[i];
+    if (!chunk.file_id) {
+      return jsonResponse({ error: `Chunk ${i} missing file_id` }, 400);
+    }
+  }
+
+  const metadata = {
     id,
     type: "file",
-    name,
-    size: Number(body.size || 0),
-    chunkSize: Number(body.chunkSize || 0),
-    chunkCount: Number(body.chunkCount || 0),
-    chunks: body.chunks || [],
+    name: filename,
+    size: Number(body.size) || 0,
+    chunkSize: Number(body.chunkSize) || MAX_CHUNK_SIZE,
+    chunkCount: Number(body.chunkCount) || body.chunks.length,
+    chunks: body.chunks.map((c, i) => ({
+      index: c.index ?? i,
+      file_id: c.file_id,
+      hash: c.hash || null,
+      size: c.size || 0,
+    })),
     mimeType: body.mimeType || "application/octet-stream",
     createdAt: Date.now(),
     modifiedAt: Date.now(),
   };
 
-  await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(meta));
+  // Save metadata to KV
+  try {
+    await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(metadata));
+  } catch (err) {
+    return jsonResponse({ error: "Failed to save metadata: " + err.message }, 500);
+  }
 
-  const tree = await getFS(env);
-  const parent = findNode(tree, parentId);
-  if (!parent || parent.type !== "folder") return json({ error: "Parent not found" }, 400);
+  // Update file system tree
+  try {
+    const tree = await getFileSystem(env);
+    const parent = findNodeById(tree, parentId);
 
-  parent.children = parent.children.filter(c => c.id !== id);
-  parent.children.push({ id, type: "file", name, size: meta.size, mimeType: meta.mimeType, createdAt: meta.createdAt });
-  await putFS(env, tree);
+    if (!parent) {
+      return jsonResponse({ error: "Parent folder not found: " + parentId }, 400);
+    }
 
-  return json({ ok: true, id, meta });
+    if (parent.type !== "folder") {
+      return jsonResponse({ error: "Parent is not a folder" }, 400);
+    }
+
+    // Remove existing entry with same ID if any
+    parent.children = parent.children.filter((c) => c.id !== id);
+
+    // Add new entry
+    parent.children.push({
+      id,
+      type: "file",
+      name: filename,
+      size: metadata.size,
+      mimeType: metadata.mimeType,
+      createdAt: metadata.createdAt,
+    });
+
+    await saveFileSystem(env, tree);
+  } catch (err) {
+    return jsonResponse({ error: "Failed to update file system: " + err.message }, 500);
+  }
+
+  return jsonResponse({
+    ok: true,
+    id,
+    metadata,
+  });
 }
 
+// ─── GET METADATA ───
 async function getMeta(request, env, url) {
   const id = url.searchParams.get("id");
-  if (!id) return json({ error: "Missing id" }, 400);
-  const raw = await env.VAULT_KV.get(`meta:${id}`);
-  if (!raw) return json({ error: "Not found" }, 404);
-  return new Response(raw, { status: 200, headers: { "Content-Type": "application/json", ...ch() } });
+
+  if (!id) {
+    return jsonResponse({ error: "Missing id parameter" }, 400);
+  }
+
+  try {
+    const raw = await env.VAULT_KV.get(`meta:${id}`);
+    if (!raw) {
+      return jsonResponse({ error: "Metadata not found" }, 404);
+    }
+
+    const metadata = JSON.parse(raw);
+    return jsonResponse(metadata);
+  } catch (err) {
+    return jsonResponse({ error: "Failed to get metadata: " + err.message }, 500);
+  }
 }
 
+// ─── LIST FILES ───
 async function listFiles(request, env, url) {
-  const parentId = url.searchParams.get("folder") || "root";
-  const tree = await getFS(env);
-  const node = findNode(tree, parentId);
-  if (!node || node.type !== "folder") return json({ error: "Folder not found" }, 404);
-  return json({ ok: true, folder: node });
+  const folderId = url.searchParams.get("folder") || "root";
+
+  try {
+    const tree = await getFileSystem(env);
+    const folder = findNodeById(tree, folderId);
+
+    if (!folder) {
+      return jsonResponse({ error: "Folder not found: " + folderId }, 404);
+    }
+
+    if (folder.type !== "folder") {
+      return jsonResponse({ error: "Not a folder" }, 400);
+    }
+
+    return jsonResponse({
+      ok: true,
+      folder: {
+        id: folder.id,
+        name: folder.name,
+        type: folder.type,
+        children: folder.children || [],
+        createdAt: folder.createdAt,
+      },
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to list files: " + err.message }, 500);
+  }
 }
 
+// ─── DELETE FILE/FOLDER ───
 async function deleteFile(request, env) {
-  const body = await request.json();
-  const id = body.id;
-  if (!id) return json({ error: "Missing id" }, 400);
-
-  const tree = await getFS(env);
-  const parent = findParent(tree, id);
-  if (parent) {
-    parent.children = parent.children.filter(c => c.id !== id);
-    await putFS(env, tree);
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
   }
 
-  await env.VAULT_KV.delete(`meta:${id}`);
-  return json({ ok: true });
+  const id = body.id;
+  if (!id) {
+    return jsonResponse({ error: "Missing id" }, 400);
+  }
+
+  if (id === "root") {
+    return jsonResponse({ error: "Cannot delete root folder" }, 400);
+  }
+
+  try {
+    const tree = await getFileSystem(env);
+    const node = findNodeById(tree, id);
+
+    if (!node) {
+      return jsonResponse({ error: "Item not found" }, 404);
+    }
+
+    // Collect all file IDs to delete (for recursive folder deletion)
+    const fileIds = collectAllFileIds(node);
+
+    // Include the node itself if it's a file
+    if (node.type === "file") {
+      fileIds.push(id);
+    }
+
+    // Delete metadata for all files
+    for (const fileId of fileIds) {
+      try {
+        await env.VAULT_KV.delete(`meta:${fileId}`);
+      } catch (_) {
+        // Continue even if some deletions fail
+      }
+    }
+
+    // Remove from parent
+    const parent = findParentNode(tree, id);
+    if (parent) {
+      parent.children = parent.children.filter((c) => c.id !== id);
+      await saveFileSystem(env, tree);
+    }
+
+    return jsonResponse({
+      ok: true,
+      deleted: id,
+      filesDeleted: fileIds.length,
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to delete: " + err.message }, 500);
+  }
 }
 
+// ─── RENAME FILE/FOLDER ───
 async function renameFile(request, env) {
-  const body = await request.json();
-  const id = body.id;
-  const newName = sanitize(body.name);
-  if (!id || !newName) return json({ error: "Missing params" }, 400);
-
-  const tree = await getFS(env);
-  const node = findNode(tree, id);
-  if (!node) return json({ error: "Not found" }, 404);
-  node.name = newName;
-  await putFS(env, tree);
-
-  const raw = await env.VAULT_KV.get(`meta:${id}`);
-  if (raw) {
-    const meta = JSON.parse(raw);
-    meta.name = newName;
-    meta.modifiedAt = Date.now();
-    await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(meta));
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
   }
 
-  return json({ ok: true });
+  const id = body.id;
+  const newName = sanitizeFilename(body.name);
+
+  if (!id) {
+    return jsonResponse({ error: "Missing id" }, 400);
+  }
+
+  if (!newName || newName === "file") {
+    return jsonResponse({ error: "Invalid name" }, 400);
+  }
+
+  if (id === "root") {
+    return jsonResponse({ error: "Cannot rename root folder" }, 400);
+  }
+
+  try {
+    const tree = await getFileSystem(env);
+    const node = findNodeById(tree, id);
+
+    if (!node) {
+      return jsonResponse({ error: "Item not found" }, 404);
+    }
+
+    // Update node name
+    node.name = newName;
+    await saveFileSystem(env, tree);
+
+    // Also update metadata if it's a file
+    if (node.type === "file") {
+      const raw = await env.VAULT_KV.get(`meta:${id}`);
+      if (raw) {
+        const metadata = JSON.parse(raw);
+        metadata.name = newName;
+        metadata.modifiedAt = Date.now();
+        await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(metadata));
+      }
+    }
+
+    return jsonResponse({
+      ok: true,
+      id,
+      name: newName,
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to rename: " + err.message }, 500);
+  }
 }
 
+// ─── CREATE FOLDER ───
 async function mkdir(request, env) {
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
+  }
+
   const parentId = body.parentId || "root";
-  const name = sanitize(body.name);
-  const id = crypto.randomUUID();
+  const name = sanitizeFilename(body.name);
 
-  const tree = await getFS(env);
-  const parent = findNode(tree, parentId);
-  if (!parent || parent.type !== "folder") return json({ error: "Parent not found" }, 400);
+  if (!name || name === "file") {
+    return jsonResponse({ error: "Invalid folder name" }, 400);
+  }
 
-  parent.children.push({ id, type: "folder", name, children: [], createdAt: Date.now() });
-  await putFS(env, tree);
+  try {
+    const tree = await getFileSystem(env);
+    const parent = findNodeById(tree, parentId);
 
-  return json({ ok: true, id, name });
+    if (!parent) {
+      return jsonResponse({ error: "Parent folder not found" }, 404);
+    }
+
+    if (parent.type !== "folder") {
+      return jsonResponse({ error: "Parent is not a folder" }, 400);
+    }
+
+    // Check for duplicate name
+    const existing = parent.children.find(
+      (c) => c.name.toLowerCase() === name.toLowerCase() && c.type === "folder"
+    );
+    if (existing) {
+      return jsonResponse({ error: "Folder with this name already exists" }, 409);
+    }
+
+    const newFolder = {
+      id: crypto.randomUUID(),
+      type: "folder",
+      name,
+      children: [],
+      createdAt: Date.now(),
+    };
+
+    parent.children.push(newFolder);
+    await saveFileSystem(env, tree);
+
+    return jsonResponse({
+      ok: true,
+      folder: newFolder,
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to create folder: " + err.message }, 500);
+  }
 }
 
+// ─── MOVE FILE/FOLDER ───
 async function moveFile(request, env) {
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
+  }
+
   const id = body.id;
   const targetId = body.targetId || "root";
 
-  const tree = await getFS(env);
-  const parent = findParent(tree, id);
-  const target = findNode(tree, targetId);
-  const node = findNode(tree, id);
+  if (!id) {
+    return jsonResponse({ error: "Missing id" }, 400);
+  }
 
-  if (!parent || !target || !node) return json({ error: "Not found" }, 404);
-  if (target.type !== "folder") return json({ error: "Target not folder" }, 400);
+  if (id === "root") {
+    return jsonResponse({ error: "Cannot move root folder" }, 400);
+  }
 
-  parent.children = parent.children.filter(c => c.id !== id);
-  target.children.push(node);
-  await putFS(env, tree);
+  if (id === targetId) {
+    return jsonResponse({ error: "Cannot move item into itself" }, 400);
+  }
 
-  return json({ ok: true });
+  try {
+    const tree = await getFileSystem(env);
+
+    const node = findNodeById(tree, id);
+    if (!node) {
+      return jsonResponse({ error: "Item not found" }, 404);
+    }
+
+    const target = findNodeById(tree, targetId);
+    if (!target) {
+      return jsonResponse({ error: "Target folder not found" }, 404);
+    }
+
+    if (target.type !== "folder") {
+      return jsonResponse({ error: "Target is not a folder" }, 400);
+    }
+
+    // Check if trying to move a folder into its descendant
+    if (node.type === "folder" && findNodeById(node, targetId)) {
+      return jsonResponse({ error: "Cannot move folder into its own descendant" }, 400);
+    }
+
+    const parent = findParentNode(tree, id);
+    if (!parent) {
+      return jsonResponse({ error: "Could not find parent" }, 500);
+    }
+
+    // Remove from current parent
+    parent.children = parent.children.filter((c) => c.id !== id);
+
+    // Add to target
+    target.children.push(node);
+
+    await saveFileSystem(env, tree);
+
+    return jsonResponse({
+      ok: true,
+      id,
+      movedTo: targetId,
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to move: " + err.message }, 500);
+  }
 }
 
+// ─── REMOTE UPLOAD ───
 async function remoteUpload(request, env) {
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return jsonResponse({ error: "Invalid JSON: " + err.message }, 400);
+  }
+
   const fileUrl = body.url;
-  const name = sanitize(body.filename || "remote_file.bin");
+  const filename = sanitizeFilename(body.filename || "remote_file.bin");
   const uploadId = body.uploadId || crypto.randomUUID();
   const parentId = body.parentId || "root";
-  const chunkSize = Math.min(Number(body.chunkSize || 20 * 1024 * 1024), 20 * 1024 * 1024);
+  const chunkSize = Math.min(
+    Math.max(Number(body.chunkSize) || MAX_CHUNK_SIZE, 1024 * 1024),
+    MAX_CHUNK_SIZE
+  );
 
-  if (!fileUrl || !/^https?:\/\//i.test(fileUrl)) return json({ error: "Invalid URL" }, 400);
+  // Validate URL
+  if (!fileUrl || typeof fileUrl !== "string") {
+    return jsonResponse({ error: "Missing url" }, 400);
+  }
 
-  const remote = await retryFetch(fileUrl);
-  if (!remote.ok || !remote.body) return json({ error: "Fetch failed" }, 502);
+  if (!/^https?:\/\//i.test(fileUrl)) {
+    return jsonResponse({ error: "Invalid URL protocol (must be http or https)" }, 400);
+  }
 
-  const reader = remote.body.getReader();
+  // Verify parent exists
+  const tree = await getFileSystem(env);
+  const parent = findNodeById(tree, parentId);
+  if (!parent || parent.type !== "folder") {
+    return jsonResponse({ error: "Parent folder not found" }, 400);
+  }
+
+  // Fetch remote file
+  let remoteResponse;
+  try {
+    remoteResponse = await fetchWithRetry(fileUrl, {
+      headers: {
+        "User-Agent": "TelegramCloudVault/1.0",
+      },
+    });
+  } catch (err) {
+    return jsonResponse({ error: "Failed to fetch remote file: " + err.message }, 502);
+  }
+
+  if (!remoteResponse.ok) {
+    return jsonResponse(
+      { error: `Remote server returned ${remoteResponse.status}` },
+      502
+    );
+  }
+
+  if (!remoteResponse.body) {
+    return jsonResponse({ error: "Remote file has no body" }, 502);
+  }
+
+  // Check content length if available
+  const contentLength = parseInt(remoteResponse.headers.get("Content-Length") || "0", 10);
+  if (contentLength > MAX_FILE_SIZE) {
+    return jsonResponse(
+      { error: `File too large. Max: ${MAX_FILE_SIZE} bytes` },
+      400
+    );
+  }
+
+  const chatId = env.TELEGRAM_CHAT_ID;
+  if (!chatId) {
+    return jsonResponse({ error: "TELEGRAM_CHAT_ID not configured" }, 500);
+  }
+
+  // Stream and chunk the file
+  const reader = remoteResponse.body.getReader();
   let buffer = new Uint8Array(0);
-  let idx = 0;
+  let chunkIndex = 0;
   const chunks = [];
-  let total = 0;
+  let totalSize = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const next = new Uint8Array(buffer.length + value.length);
-    next.set(buffer); next.set(value, buffer.length);
-    buffer = next; total += value.length;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
 
-    while (buffer.length >= chunkSize) {
-      const slice = buffer.slice(0, chunkSize);
-      buffer = buffer.slice(chunkSize);
-      const hash = await sha256(slice.buffer);
+      if (value) {
+        const newBuffer = new Uint8Array(buffer.length + value.length);
+        newBuffer.set(buffer);
+        newBuffer.set(value, buffer.length);
+        buffer = newBuffer;
+        totalSize += value.length;
 
-      const fd = new FormData();
-      fd.append("chat_id", env.TELEGRAM_CHAT_ID);
-      fd.append("document", new Blob([slice]), `${name}.part${idx}`);
-      fd.append("disable_content_type_detection", "true");
+        // Check total size limit
+        if (totalSize > MAX_FILE_SIZE) {
+          throw new Error(`File exceeds maximum size of ${MAX_FILE_SIZE} bytes`);
+        }
+      }
 
-      const r = await tg(env, "sendDocument", fd, true);
-      chunks.push({ index: idx, file_id: r.result.document.file_id, hash, size: slice.length });
-      idx++;
+      // Process complete chunks
+      while (buffer.length >= chunkSize) {
+        const chunkData = buffer.slice(0, chunkSize);
+        buffer = buffer.slice(chunkSize);
+
+        const hash = await computeSHA256(chunkData);
+
+        const formData = new FormData();
+        formData.append("chat_id", chatId);
+        formData.append(
+          "document",
+          new Blob([chunkData], { type: "application/octet-stream" }),
+          `${filename}.part${chunkIndex}`
+        );
+        formData.append("disable_content_type_detection", "true");
+
+        const tgResponse = await telegramAPI(env, "sendDocument", formData, true);
+        const doc = tgResponse?.result?.document;
+
+        if (!doc?.file_id) {
+          throw new Error("Telegram did not return file_id for chunk " + chunkIndex);
+        }
+
+        chunks.push({
+          index: chunkIndex,
+          file_id: doc.file_id,
+          hash,
+          size: chunkData.length,
+        });
+
+        chunkIndex++;
+      }
+
+      if (done) break;
     }
+
+    // Upload remaining buffer
+    if (buffer.length > 0) {
+      const hash = await computeSHA256(buffer);
+
+      const formData = new FormData();
+      formData.append("chat_id", chatId);
+      formData.append(
+        "document",
+        new Blob([buffer], { type: "application/octet-stream" }),
+        `${filename}.part${chunkIndex}`
+      );
+      formData.append("disable_content_type_detection", "true");
+
+      const tgResponse = await telegramAPI(env, "sendDocument", formData, true);
+      const doc = tgResponse?.result?.document;
+
+      if (!doc?.file_id) {
+        throw new Error("Telegram did not return file_id for final chunk");
+      }
+
+      chunks.push({
+        index: chunkIndex,
+        file_id: doc.file_id,
+        hash,
+        size: buffer.length,
+      });
+    }
+  } catch (err) {
+    return jsonResponse({ error: "Remote upload failed: " + err.message }, 500);
   }
 
-  if (buffer.length > 0) {
-    const hash = await sha256(buffer.buffer);
-    const fd = new FormData();
-    fd.append("chat_id", env.TELEGRAM_CHAT_ID);
-    fd.append("document", new Blob([buffer]), `${name}.part${idx}`);
-    fd.append("disable_content_type_detection", "true");
-    const r = await tg(env, "sendDocument", fd, true);
-    chunks.push({ index: idx, file_id: r.result.document.file_id, hash, size: buffer.length });
-  }
-
-  const meta = {
-    id: uploadId, filename: name, size: total, chunkSize,
-    chunkCount: chunks.length, chunks, parentId
+  // Create metadata
+  const metadata = {
+    id: uploadId,
+    type: "file",
+    name: filename,
+    size: totalSize,
+    chunkSize,
+    chunkCount: chunks.length,
+    chunks,
+    mimeType: remoteResponse.headers.get("Content-Type") || "application/octet-stream",
+    createdAt: Date.now(),
+    modifiedAt: Date.now(),
+    source: "remote_upload",
+    sourceUrl: fileUrl,
   };
 
-  // Reuse saveMeta logic
-  await env.VAULT_KV.put(`meta:${uploadId}`, JSON.stringify({
-    ...meta, type: "file", name, mimeType: "application/octet-stream",
-    createdAt: Date.now(), modifiedAt: Date.now()
-  }));
+  // Save metadata
+  await env.VAULT_KV.put(`meta:${uploadId}`, JSON.stringify(metadata));
 
-  const tree = await getFS(env);
-  const parent = findNode(tree, parentId);
-  if (parent && parent.type === "folder") {
-    parent.children.push({
-      id: uploadId, type: "file", name, size: total,
-      mimeType: "application/octet-stream", createdAt: Date.now()
+  // Update file system
+  const updatedTree = await getFileSystem(env);
+  const parentFolder = findNodeById(updatedTree, parentId);
+  if (parentFolder && parentFolder.type === "folder") {
+    parentFolder.children = parentFolder.children.filter((c) => c.id !== uploadId);
+    parentFolder.children.push({
+      id: uploadId,
+      type: "file",
+      name: filename,
+      size: totalSize,
+      mimeType: metadata.mimeType,
+      createdAt: metadata.createdAt,
     });
-    await putFS(env, tree);
+    await saveFileSystem(env, updatedTree);
   }
 
-  return json({ ok: true, metadata: meta });
+  return jsonResponse({
+    ok: true,
+    id: uploadId,
+    metadata,
+  });
 }
