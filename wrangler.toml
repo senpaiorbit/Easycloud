@@ -3,8 +3,8 @@ main = "worker.js"
 compatibility_date = "2025-03-01"
 
 [[kv_namespaces]]
-binding = "VAULT_KV"
-id = "YOUR_KV_NAMESPACE_ID"
+binding = "easycloud"
+id = "9a3d8edafc324885b99ab20b5b3619f0"
 
 [vars]
 TELEGRAM_CHAT_ID = "-1001234567890"
