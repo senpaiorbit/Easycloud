@@ -1,414 +1,417 @@
+const MAX_RETRIES = 6;
+
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const p = url.pathname;
+
+    if (request.method === "OPTIONS") return cors(204);
+
+    const routes = {
+      "POST /upload_chunk": uploadChunk,
+      "GET /get_chunk": getChunk,
+      "POST /save_meta": saveMeta,
+      "GET /meta": getMeta,
+      "GET /list": listFiles,
+      "POST /delete": deleteFile,
+      "POST /rename": renameFile,
+      "POST /mkdir": mkdir,
+      "POST /move": moveFile,
+      "POST /remote_upload": remoteUpload,
+    };
+
+    const key = `${request.method} ${p}`;
+    const handler = routes[key];
+    if (!handler) return json({ error: "Not found" }, 404);
+
     try {
-      const url = new URL(request.url);
-      const path = url.pathname;
-
-      if (request.method === "OPTIONS") {
-        return handleCors();
-      }
-
-      if (path === "/upload_chunk" && request.method === "POST") {
-        return await uploadChunk(request, env);
-      }
-
-      if (path === "/get_chunk" && request.method === "GET") {
-        return await getChunk(request, env);
-      }
-
-      if (path === "/get_file_url" && request.method === "GET") {
-        return await getFileUrl(request, env);
-      }
-
-      if (path === "/remote_upload" && request.method === "POST") {
-        return await remoteUpload(request, env);
-      }
-
-      if (path === "/save_metadata" && request.method === "POST") {
-        return await saveMetadata(request, env);
-      }
-
-      if (path === "/metadata" && request.method === "GET") {
-        return await getMetadata(request, env);
-      }
-
-      return json({ error: "Not found" }, 404);
-    } catch (err) {
-      return json({
-        error: "Internal error",
-        message: err?.message || String(err)
-      }, 500);
+      return await handler(request, env, url);
+    } catch (e) {
+      return json({ error: e.message || "Internal error" }, 500);
     }
   }
 };
 
-function corsHeaders() {
+function cors(status = 200) {
+  return new Response(null, {
+    status,
+    headers: ch()
+  });
+}
+
+function ch() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
   };
 }
 
-function handleCors() {
-  return new Response(null, { status: 204, headers: corsHeaders() });
-}
-
-function json(data, status = 200) {
+function json(data, s = 200) {
   return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders()
-    }
+    status: s,
+    headers: { "Content-Type": "application/json", ...ch() }
   });
 }
 
-function sanitizeFilename(name) {
-  return (name || "file")
-    .replace(/[\/\\?%*:|"<>]/g, "_")
-    .replace(/\.\./g, "_")
-    .slice(0, 180);
+function stream(body, contentType, contentLength) {
+  const h = new Headers(ch());
+  h.set("Content-Type", contentType || "application/octet-stream");
+  if (contentLength) h.set("Content-Length", contentLength);
+  h.set("Cache-Control", "private, max-age=7200");
+  return new Response(body, { status: 200, headers: h });
 }
 
-function validateFileId(fileId) {
-  // Telegram file_id can contain letters, numbers, _ and -
-  return typeof fileId === "string" && /^[A-Za-z0-9_\-]+$/.test(fileId);
+function sanitize(n) {
+  return (n || "file").replace(/[\/\\?%*:|"<>]/g, "_").replace(/\.\./g, "_").slice(0, 200);
 }
 
-async function sha256Hex(buffer) {
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+function validId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9_\-]+$/.test(id);
 }
 
-async function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+async function sha256(buf) {
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function telegramApi(env, method, body, isFormData = false, attempt = 0) {
-  const maxAttempts = 5;
-  const endpoint = `https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`;
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
 
-  let headers = {};
-  let payload = body;
+async function tg(env, method, body, isForm = false, attempt = 0) {
+  const ep = `https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`;
+  const opts = { method: "POST" };
 
-  if (!isFormData) {
-    headers["Content-Type"] = "application/json";
-    payload = JSON.stringify(body);
+  if (isForm) {
+    opts.body = body;
+  } else {
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify(body);
   }
 
-  const resp = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: payload
-  });
+  const res = await fetch(ep, opts);
 
-  if (resp.status === 429) {
-    let wait = 2 ** attempt * 1000;
+  if (res.status === 429 && attempt < MAX_RETRIES) {
+    let wait = 1000 * 2 ** attempt;
     try {
-      const data = await resp.json();
-      const retryAfter = data?.parameters?.retry_after;
-      if (retryAfter) wait = retryAfter * 1000;
+      const j = await res.json();
+      if (j?.parameters?.retry_after) wait = j.parameters.retry_after * 1000;
     } catch (_) {}
-    if (attempt < maxAttempts) {
-      await sleep(wait);
-      return telegramApi(env, method, body, isFormData, attempt + 1);
-    }
+    await sleep(wait);
+    return tg(env, method, body, isForm, attempt + 1);
   }
 
-  if (!resp.ok) {
-    const text = await resp.text();
-    if (attempt < maxAttempts) {
-      await sleep(2 ** attempt * 1000);
-      return telegramApi(env, method, body, isFormData, attempt + 1);
-    }
-    throw new Error(`Telegram API error ${resp.status}: ${text}`);
+  if (!res.ok && attempt < MAX_RETRIES) {
+    await sleep(1000 * 2 ** attempt);
+    return tg(env, method, body, isForm, attempt + 1);
   }
 
-  const data = await resp.json();
-  if (!data.ok) {
-    if (attempt < maxAttempts) {
-      await sleep(2 ** attempt * 1000);
-      return telegramApi(env, method, body, isFormData, attempt + 1);
-    }
-    throw new Error(`Telegram API returned not ok: ${JSON.stringify(data)}`);
-  }
-
+  const data = await res.json();
+  if (!data.ok) throw new Error(`TG: ${JSON.stringify(data)}`);
   return data;
 }
 
+async function retryFetch(url, opts = {}, attempts = MAX_RETRIES) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await fetch(url, opts);
+      if (r.status === 429 || r.status >= 500) {
+        await sleep(Math.min(30000, 1000 * 2 ** i));
+        continue;
+      }
+      return r;
+    } catch (e) {
+      if (i === attempts - 1) throw e;
+      await sleep(1000 * 2 ** i);
+    }
+  }
+  throw new Error("retryFetch exhausted");
+}
+
+// ─── UPLOAD CHUNK ───
 async function uploadChunk(request, env) {
   const form = await request.formData();
   const chunk = form.get("chunk");
-  const index = form.get("index");
-  const fileName = sanitizeFilename(form.get("filename"));
+  const index = Number(form.get("index"));
+  const name = sanitize(form.get("filename"));
   const expectedHash = form.get("hash");
   const uploadId = form.get("uploadId");
 
-  if (!chunk || !(chunk instanceof File)) {
-    return json({ error: "Missing chunk file" }, 400);
+  if (!chunk || !(chunk instanceof File)) return json({ error: "Missing chunk" }, 400);
+
+  const buf = await chunk.arrayBuffer();
+  const hash = await sha256(buf);
+
+  if (expectedHash && hash !== expectedHash) {
+    return json({ error: "Hash mismatch" }, 400);
   }
 
-  const arrBuf = await chunk.arrayBuffer();
-  const actualHash = await sha256Hex(arrBuf);
+  const fd = new FormData();
+  fd.append("chat_id", env.TELEGRAM_CHAT_ID);
+  fd.append("document", new Blob([buf]), `${name}.part${index}`);
+  fd.append("disable_content_type_detection", "true");
 
-  if (expectedHash && actualHash !== expectedHash) {
-    return json({ error: "SHA-256 mismatch before Telegram upload" }, 400);
-  }
-
-  const tgForm = new FormData();
-  tgForm.append("chat_id", env.TELEGRAM_CHAT_ID);
-  tgForm.append("document", new Blob([arrBuf]), `${fileName}.part${index}`);
-  tgForm.append("disable_content_type_detection", "true");
-  tgForm.append("caption", JSON.stringify({
-    uploadId,
-    index: Number(index),
-    originalName: fileName,
-    hash: actualHash
-  }).slice(0, 1024));
-
-  const res = await telegramApi(env, "sendDocument", tgForm, true);
-
-  const doc = res?.result?.document;
-  if (!doc?.file_id) {
-    return json({ error: "Telegram did not return file_id" }, 500);
-  }
+  const r = await tg(env, "sendDocument", fd, true);
+  const doc = r?.result?.document;
+  if (!doc?.file_id) return json({ error: "No file_id" }, 500);
 
   return json({
     ok: true,
-    index: Number(index),
+    index,
     file_id: doc.file_id,
-    file_unique_id: doc.file_unique_id,
-    hash: actualHash,
+    hash,
     size: doc.file_size || chunk.size
   });
 }
 
-async function getFileUrl(request, env) {
-  const url = new URL(request.url);
+// ─── GET CHUNK (STREAM) ───
+async function getChunk(request, env, url) {
   const fileId = url.searchParams.get("file_id");
+  if (!validId(fileId)) return json({ error: "Invalid file_id" }, 400);
 
-  if (!validateFileId(fileId)) {
-    return json({ error: "Invalid file_id" }, 400);
-  }
+  const r = await tg(env, "getFile", { file_id: fileId });
+  const fp = r?.result?.file_path;
+  if (!fp || fp.includes("..")) return json({ error: "Bad path" }, 400);
 
-  const res = await telegramApi(env, "getFile", { file_id: fileId });
+  const tgUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fp}`;
+  const upstream = await retryFetch(tgUrl);
+  if (!upstream.ok) return json({ error: "TG fetch failed" }, 502);
 
-  const filePath = res?.result?.file_path;
-  if (!filePath) {
-    return json({ error: "Unable to resolve file_path" }, 500);
-  }
-
-  const directUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`;
-  return json({
-    ok: true,
-    file_path: filePath,
-    url: directUrl
-  });
+  return stream(
+    upstream.body,
+    upstream.headers.get("Content-Type"),
+    upstream.headers.get("Content-Length")
+  );
 }
 
-async function fetchWithRetry(url, opts = {}, attempts = 5) {
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const resp = await fetch(url, opts);
-      if (resp.status === 429) {
-        await sleep(Math.min(30000, 1000 * 2 ** i));
-        continue;
-      }
-      if (!resp.ok) {
-        if (i < attempts - 1) {
-          await sleep(1000 * 2 ** i);
-          continue;
-        }
-      }
-      return resp;
-    } catch (err) {
-      lastErr = err;
-      if (i < attempts - 1) {
-        await sleep(1000 * 2 ** i);
-      }
+// ─── FILE SYSTEM (KV-BASED) ───
+async function getFS(env) {
+  const raw = await env.VAULT_KV.get("fs:tree");
+  return raw ? JSON.parse(raw) : { name: "root", type: "folder", children: [], id: "root" };
+}
+
+async function putFS(env, tree) {
+  await env.VAULT_KV.put("fs:tree", JSON.stringify(tree));
+}
+
+function findNode(tree, id) {
+  if (tree.id === id) return tree;
+  if (tree.children) {
+    for (const c of tree.children) {
+      const found = findNode(c, id);
+      if (found) return found;
     }
   }
-  throw lastErr || new Error("fetchWithRetry failed");
+  return null;
 }
 
-async function getChunk(request, env) {
-  const url = new URL(request.url);
-  const fileId = url.searchParams.get("file_id");
+function findParent(tree, id) {
+  if (tree.children) {
+    for (const c of tree.children) {
+      if (c.id === id) return tree;
+      const found = findParent(c, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
-  if (!validateFileId(fileId)) {
-    return json({ error: "Invalid file_id" }, 400);
+async function saveMeta(request, env) {
+  const body = await request.json();
+  const id = body.id || crypto.randomUUID();
+  const parentId = body.parentId || "root";
+  const name = sanitize(body.filename);
+
+  const meta = {
+    id,
+    type: "file",
+    name,
+    size: Number(body.size || 0),
+    chunkSize: Number(body.chunkSize || 0),
+    chunkCount: Number(body.chunkCount || 0),
+    chunks: body.chunks || [],
+    mimeType: body.mimeType || "application/octet-stream",
+    createdAt: Date.now(),
+    modifiedAt: Date.now(),
+  };
+
+  await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(meta));
+
+  const tree = await getFS(env);
+  const parent = findNode(tree, parentId);
+  if (!parent || parent.type !== "folder") return json({ error: "Parent not found" }, 400);
+
+  parent.children = parent.children.filter(c => c.id !== id);
+  parent.children.push({ id, type: "file", name, size: meta.size, mimeType: meta.mimeType, createdAt: meta.createdAt });
+  await putFS(env, tree);
+
+  return json({ ok: true, id, meta });
+}
+
+async function getMeta(request, env, url) {
+  const id = url.searchParams.get("id");
+  if (!id) return json({ error: "Missing id" }, 400);
+  const raw = await env.VAULT_KV.get(`meta:${id}`);
+  if (!raw) return json({ error: "Not found" }, 404);
+  return new Response(raw, { status: 200, headers: { "Content-Type": "application/json", ...ch() } });
+}
+
+async function listFiles(request, env, url) {
+  const parentId = url.searchParams.get("folder") || "root";
+  const tree = await getFS(env);
+  const node = findNode(tree, parentId);
+  if (!node || node.type !== "folder") return json({ error: "Folder not found" }, 404);
+  return json({ ok: true, folder: node });
+}
+
+async function deleteFile(request, env) {
+  const body = await request.json();
+  const id = body.id;
+  if (!id) return json({ error: "Missing id" }, 400);
+
+  const tree = await getFS(env);
+  const parent = findParent(tree, id);
+  if (parent) {
+    parent.children = parent.children.filter(c => c.id !== id);
+    await putFS(env, tree);
   }
 
-  const tg = await telegramApi(env, "getFile", { file_id: fileId });
-  const filePath = tg?.result?.file_path;
+  await env.VAULT_KV.delete(`meta:${id}`);
+  return json({ ok: true });
+}
 
-  if (!filePath || filePath.includes("..")) {
-    return json({ error: "Invalid file path" }, 400);
+async function renameFile(request, env) {
+  const body = await request.json();
+  const id = body.id;
+  const newName = sanitize(body.name);
+  if (!id || !newName) return json({ error: "Missing params" }, 400);
+
+  const tree = await getFS(env);
+  const node = findNode(tree, id);
+  if (!node) return json({ error: "Not found" }, 404);
+  node.name = newName;
+  await putFS(env, tree);
+
+  const raw = await env.VAULT_KV.get(`meta:${id}`);
+  if (raw) {
+    const meta = JSON.parse(raw);
+    meta.name = newName;
+    meta.modifiedAt = Date.now();
+    await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(meta));
   }
 
-  const tgUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`;
-  const upstream = await fetchWithRetry(tgUrl, {}, 5);
+  return json({ ok: true });
+}
 
-  if (!upstream.ok) {
-    return json({ error: "Failed to fetch Telegram file", status: upstream.status }, 502);
-  }
+async function mkdir(request, env) {
+  const body = await request.json();
+  const parentId = body.parentId || "root";
+  const name = sanitize(body.name);
+  const id = crypto.randomUUID();
 
-  const headers = new Headers(corsHeaders());
-  headers.set("Content-Type", upstream.headers.get("Content-Type") || "application/octet-stream");
-  headers.set("Content-Length", upstream.headers.get("Content-Length") || "");
-  headers.set("Cache-Control", "private, max-age=3600");
+  const tree = await getFS(env);
+  const parent = findNode(tree, parentId);
+  if (!parent || parent.type !== "folder") return json({ error: "Parent not found" }, 400);
 
-  return new Response(upstream.body, {
-    status: 200,
-    headers
-  });
+  parent.children.push({ id, type: "folder", name, children: [], createdAt: Date.now() });
+  await putFS(env, tree);
+
+  return json({ ok: true, id, name });
+}
+
+async function moveFile(request, env) {
+  const body = await request.json();
+  const id = body.id;
+  const targetId = body.targetId || "root";
+
+  const tree = await getFS(env);
+  const parent = findParent(tree, id);
+  const target = findNode(tree, targetId);
+  const node = findNode(tree, id);
+
+  if (!parent || !target || !node) return json({ error: "Not found" }, 404);
+  if (target.type !== "folder") return json({ error: "Target not folder" }, 400);
+
+  parent.children = parent.children.filter(c => c.id !== id);
+  target.children.push(node);
+  await putFS(env, tree);
+
+  return json({ ok: true });
 }
 
 async function remoteUpload(request, env) {
   const body = await request.json();
-  const fileUrl = body?.url;
-  const fileName = sanitizeFilename(body?.filename || "remote_file.bin");
-  const uploadId = body?.uploadId || crypto.randomUUID();
-  const chunkSize = Math.min(Number(body?.chunkSize || 20 * 1024 * 1024), 20 * 1024 * 1024);
+  const fileUrl = body.url;
+  const name = sanitize(body.filename || "remote_file.bin");
+  const uploadId = body.uploadId || crypto.randomUUID();
+  const parentId = body.parentId || "root";
+  const chunkSize = Math.min(Number(body.chunkSize || 20 * 1024 * 1024), 20 * 1024 * 1024);
 
-  if (!fileUrl || !/^https?:\/\//i.test(fileUrl)) {
-    return json({ error: "Invalid remote URL" }, 400);
-  }
+  if (!fileUrl || !/^https?:\/\//i.test(fileUrl)) return json({ error: "Invalid URL" }, 400);
 
-  const remoteResp = await fetchWithRetry(fileUrl, {}, 5);
-  if (!remoteResp.ok || !remoteResp.body) {
-    return json({ error: "Failed to fetch remote file" }, 502);
-  }
+  const remote = await retryFetch(fileUrl);
+  if (!remote.ok || !remote.body) return json({ error: "Fetch failed" }, 502);
 
-  const reader = remoteResp.body.getReader();
+  const reader = remote.body.getReader();
   let buffer = new Uint8Array(0);
-  let chunkIndex = 0;
+  let idx = 0;
   const chunks = [];
-  let totalSize = 0;
+  let total = 0;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
     const next = new Uint8Array(buffer.length + value.length);
-    next.set(buffer, 0);
-    next.set(value, buffer.length);
-    buffer = next;
-    totalSize += value.length;
+    next.set(buffer); next.set(value, buffer.length);
+    buffer = next; total += value.length;
 
     while (buffer.length >= chunkSize) {
-      const chunkBytes = buffer.slice(0, chunkSize);
+      const slice = buffer.slice(0, chunkSize);
       buffer = buffer.slice(chunkSize);
+      const hash = await sha256(slice.buffer);
 
-      const hash = await sha256Hex(chunkBytes.buffer);
-      const tgForm = new FormData();
-      tgForm.append("chat_id", env.TELEGRAM_CHAT_ID);
-      tgForm.append("document", new Blob([chunkBytes]), `${fileName}.part${chunkIndex}`);
-      tgForm.append("disable_content_type_detection", "true");
-      tgForm.append("caption", JSON.stringify({
-        uploadId,
-        index: chunkIndex,
-        originalName: fileName,
-        hash
-      }).slice(0, 1024));
+      const fd = new FormData();
+      fd.append("chat_id", env.TELEGRAM_CHAT_ID);
+      fd.append("document", new Blob([slice]), `${name}.part${idx}`);
+      fd.append("disable_content_type_detection", "true");
 
-      const res = await telegramApi(env, "sendDocument", tgForm, true);
-      const doc = res?.result?.document;
-      chunks.push({
-        index: chunkIndex,
-        file_id: doc.file_id,
-        hash,
-        size: chunkBytes.length
-      });
-
-      chunkIndex++;
+      const r = await tg(env, "sendDocument", fd, true);
+      chunks.push({ index: idx, file_id: r.result.document.file_id, hash, size: slice.length });
+      idx++;
     }
   }
 
   if (buffer.length > 0) {
-    const hash = await sha256Hex(buffer.buffer);
-    const tgForm = new FormData();
-    tgForm.append("chat_id", env.TELEGRAM_CHAT_ID);
-    tgForm.append("document", new Blob([buffer]), `${fileName}.part${chunkIndex}`);
-    tgForm.append("disable_content_type_detection", "true");
-    tgForm.append("caption", JSON.stringify({
-      uploadId,
-      index: chunkIndex,
-      originalName: fileName,
-      hash
-    }).slice(0, 1024));
+    const hash = await sha256(buffer.buffer);
+    const fd = new FormData();
+    fd.append("chat_id", env.TELEGRAM_CHAT_ID);
+    fd.append("document", new Blob([buffer]), `${name}.part${idx}`);
+    fd.append("disable_content_type_detection", "true");
+    const r = await tg(env, "sendDocument", fd, true);
+    chunks.push({ index: idx, file_id: r.result.document.file_id, hash, size: buffer.length });
+  }
 
-    const res = await telegramApi(env, "sendDocument", tgForm, true);
-    const doc = res?.result?.document;
-    chunks.push({
-      index: chunkIndex,
-      file_id: doc.file_id,
-      hash,
-      size: buffer.length
+  const meta = {
+    id: uploadId, filename: name, size: total, chunkSize,
+    chunkCount: chunks.length, chunks, parentId
+  };
+
+  // Reuse saveMeta logic
+  await env.VAULT_KV.put(`meta:${uploadId}`, JSON.stringify({
+    ...meta, type: "file", name, mimeType: "application/octet-stream",
+    createdAt: Date.now(), modifiedAt: Date.now()
+  }));
+
+  const tree = await getFS(env);
+  const parent = findNode(tree, parentId);
+  if (parent && parent.type === "folder") {
+    parent.children.push({
+      id: uploadId, type: "file", name, size: total,
+      mimeType: "application/octet-stream", createdAt: Date.now()
     });
+    await putFS(env, tree);
   }
 
-  const metadata = {
-    id: uploadId,
-    filename: fileName,
-    size: totalSize,
-    chunkSize,
-    chunkCount: chunks.length,
-    chunks,
-    createdAt: Date.now(),
-    source: "remote_upload"
-  };
-
-  if (env.VAULT_KV) {
-    await env.VAULT_KV.put(`meta:${uploadId}`, JSON.stringify(metadata));
-  }
-
-  return json({ ok: true, metadata });
-}
-
-async function saveMetadata(request, env) {
-  const body = await request.json();
-  const id = body?.id || crypto.randomUUID();
-
-  const metadata = {
-    id,
-    filename: sanitizeFilename(body?.filename),
-    size: Number(body?.size || 0),
-    chunkSize: Number(body?.chunkSize || 0),
-    chunkCount: Number(body?.chunkCount || 0),
-    chunks: Array.isArray(body?.chunks) ? body.chunks : [],
-    createdAt: Date.now()
-  };
-
-  if (!metadata.filename || !metadata.chunkCount) {
-    return json({ error: "Invalid metadata" }, 400);
-  }
-
-  if (env.VAULT_KV) {
-    await env.VAULT_KV.put(`meta:${id}`, JSON.stringify(metadata));
-  }
-
-  return json({ ok: true, id, metadata });
-}
-
-async function getMetadata(request, env) {
-  const url = new URL(request.url);
-  const id = url.searchParams.get("id");
-
-  if (!id) return json({ error: "Missing id" }, 400);
-  if (!env.VAULT_KV) return json({ error: "KV not configured" }, 500);
-
-  const data = await env.VAULT_KV.get(`meta:${id}`);
-  if (!data) return json({ error: "Not found" }, 404);
-
-  return new Response(data, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json",
-      ...corsHeaders()
-    }
-  });
+  return json({ ok: true, metadata: meta });
 }
