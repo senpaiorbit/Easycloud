@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Telegram Cloud Vault</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>Telegram Cloud Vault</h1>
+
+    <div id="dropzone" class="dropzone">
+      <p>Drag & drop a file here or click to select</p>
+      <input type="file" id="fileInput" hidden />
+    </div>
+
+    <div class="controls">
+      <label>Chunk Size (MB)
+        <input id="chunkSizeInput" type="number" value="20" min="1" max="20" />
+      </label>
+      <label>Concurrency
+        <input id="concurrencyInput" type="number" value="3" min="1" max="5" />
+      </label>
+      <button id="pauseBtn">Pause</button>
+      <button id="resumeBtn">Resume</button>
+    </div>
+
+    <div id="statusBox" class="status">
+      <div>Status: <span id="statusText">idle</span></div>
+      <div>Progress: <span id="progressText">0%</span></div>
+      <div>Speed: <span id="speedText">0 MB/s</span></div>
+      <div>ETA: <span id="etaText">--</span></div>
+      <div>Retries: <span id="retryText">0</span></div>
+    </div>
+
+    <div class="progressbar">
+      <div id="progressBar"></div>
+    </div>
+
+    <div id="fileMeta" class="meta"></div>
+
+    <hr />
+
+    <div class="download-section">
+      <input id="metadataIdInput" placeholder="Enter metadata ID" />
+      <button id="downloadBtn">Download File</button>
+    </div>
+
+    <div id="savedList" class="saved-list"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
