@@ -1,0 +1,10 @@
+name = "telegram-cloud-vault"
+main = "worker.js"
+compatibility_date = "2025-03-01"
+
+[[kv_namespaces]]
+binding = "VAULT_KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+[vars]
+TELEGRAM_CHAT_ID = "-1001234567890"
