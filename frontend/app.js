@@ -1,4 +1,4 @@
-const WORKER_URL = "https://YOUR_WORKER.workers.dev";
+const WORKER_URL = "https://easycloud.senpaiorbit.workers.dev";
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("fileInput");
 const chunkSizeInput = document.getElementById("chunkSizeInput");
