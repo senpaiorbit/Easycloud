@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Easy Cloud - Download</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 50%, #0c0c0c 100%);
+            min-height: 100vh;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            color: #fff;
+        }
+        
+        /* MEGA-style animated background lines */
+        .mega-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+        
+        .mega-line {
+            position: absolute;
+            width: 200%;
+            height: 1px;
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                rgba(99, 102, 241, 0.5) 20%, 
+                rgba(168, 85, 247, 0.8) 50%, 
+                rgba(99, 102, 241, 0.5) 80%, 
+                transparent 100%);
+            animation: moveLine 3s linear infinite;
+        }
+        
+        @keyframes moveLine {
+            0% { transform: translateX(-50%); }
+            100% { transform: translateX(0%); }
+        }
+        
+        .mega-line:nth-child(1) { top: 20%; animation-delay: 0s; opacity: 0.3; }
+        .mega-line:nth-child(2) { top: 35%; animation-delay: 0.5s; opacity: 0.5; }
+        .mega-line:nth-child(3) { top: 50%; animation-delay: 1s; opacity: 0.4; }
+        .mega-line:nth-child(4) { top: 65%; animation-delay: 1.5s; opacity: 0.6; }
+        .mega-line:nth-child(5) { top: 80%; animation-delay: 2s; opacity: 0.35; }
+        
+        .content-wrapper {
+            position: relative;
+            z-index: 1;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        /* Logo */
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .logo h1 {
+            background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-size: 2.5rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+        
+        .logo span {
+            color: rgba(255,255,255,0.6);
+            font-size: 0.9rem;
+        }
+        
+        /* Main download card */
+        .download-card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        
+        /* File preview */
+        .file-preview {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .preview-box {
+            width: 120px;
+            height: 120px;
+            margin: 0 auto 20px;
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(255, 255, 255, 0.05);
+            border: 2px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .preview-box img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        
+        .preview-box video {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        
+        .preview-box .icon {
+            font-size: 4rem;
+            color: #a855f7;
+        }
+        
+        .file-info h3 {
+            font-size: 1.2rem;
+            margin-bottom: 5px;
+            word-break: break-all;
+        }
+        
+        .file-info p {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 0.9rem;
+        }
+        
+        /* Progress section */
+        .progress-section {
+            margin-bottom: 25px;
+        }
+        
+        .progress-container {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        
+        .progress-bar {
+            background: linear-gradient(90deg, #6366f1, #a855f7, #ec4899);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+            position: relative;
+        }
+        
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+        
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .progress-info span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        /* Loading lines container */
+        .loading-lines-container {
+            position: relative;
+            height: 60px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        
+        .loading-line {
+            position: absolute;
+            height: 100%;
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                rgba(99, 102, 241, 0.6) 50%, 
+                transparent 100%);
+            width: 30%;
+            transform: translateX(-100%);
+            animation: loadingLine 2s linear infinite;
+        }
+        
+        @keyframes loadingLine {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(350%); }
+        }
+        
+        .loading-line:nth-child(1) { animation-delay: 0s; width: 40%; }
+        .loading-line:nth-child(2) { animation-delay: 0.7s; width: 25%; }
+        .loading-line:nth-child(3) { animation-delay: 1.4s; width: 35%; }
+        
+        .chunk-status {
+            display: flex;
+            gap: 2px;
+            margin-top: 10px;
+        }
+        
+        .chunk-block {
+            height: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            flex: 1;
+            transition: background 0.3s ease;
+        }
+        
+        .chunk-block.loaded { background: #10b981; }
+        .chunk-block.downloading { background: #6366f1; animation: pulse 1s infinite; }
+        .chunk-block.error { background: #ef4444; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Download button */
+        .download-btn {
+            width: 100%;
+            padding: 16px 32px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .download-btn.primary {
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            color: white;
+        }
+        
+        .download-btn.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.5);
+        }
+        
+        .download-btn.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .download-btn.secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .download-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        /* Error state */
+        .error-banner {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .error-banner i {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+            color: #ef4444;
+        }
+        
+        /* Loading state */
+        .loading-spinner {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            margin: 0 auto 20px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #a855f7;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Footer */
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 0.85rem;
+        }
+        
+        /* Badge styles */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        
+        .badge.direct {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        
+        .badge.chunked {
+            background: rgba(168, 85, 247, 0.2);
+            color: #a855f7;
+            border: 1px solid rgba(168, 85, 247, 0.3);
+        }
+        
+        /* Responsive */
+        @media (max-width: 576px) {
+            .download-card {
+                padding: 25px;
+            }
+            
+            .logo h1 {
+                font-size: 2rem;
+            }
+            
+            .preview-box {
+                width: 100px;
+                height: 100px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="mega-bg">
+        <div class="mega-line"></div>
+        <div class="mega-line"></div>
+        <div class="mega-line"></div>
+        <div class="mega-line"></div>
+        <div class="mega-line"></div>
+    </div>
+
+    <div class="content-wrapper">
+        <div class="download-card">
+            <div class="logo">
+                <h1>⚡ Easy Cloud</h1>
+                <span>Secure file storage & sharing</span>
+            </div>
+
+            <!-- Loading state -->
+            <div id="loadingState" class="loading-spinner">
+                <div class="spinner"></div>
+                <p>Loading file information...</p>
+            </div>
+
+            <!-- Download content -->
+            <div id="downloadContent" style="display: none;">
+                <!-- Error banner -->
+                <div id="errorBanner" class="error-banner" style="display: none;">
+                    <i class="bi bi-exclamation-circle"></i>
+                    <p id="errorMessage">File not found or has been deleted</p>
+                </div>
+
+                <!-- File preview -->
+                <div class="file-preview">
+                    <div class="preview-box" id="previewBox">
+                        <i class="bi bi-file-earmark icon" id="fileIcon"></i>
+                    </div>
+                    <div class="file-info">
+                        <h3 id="fileName">filename.ext</h3>
+                        <p><span class="badge" id="modeBadge">Direct</span><span id="fileSize">0 MB</span></p>
+                    </div>
+                </div>
+
+                <!-- Progress section -->
+                <div class="progress-section" id="progressSection" style="display: none;">
+                    <div class="progress-container">
+                        <div class="progress-bar" id="mainProgress"></div>
+                    </div>
+                    
+                    <div class="loading-lines-container" id="loadingLinesContainer">
+                        <div class="loading-line"></div>
+                        <div class="loading-line"></div>
+                        <div class="loading-line"></div>
+                    </div>
+                    
+                    <div class="chunk-status" id="chunkStatus"></div>
+                    
+                    <div class="progress-info">
+                        <span><i class="bi bi-clock"></i> <span id="progressPercent">0%</span></span>
+                        <span><i class="bi bi-speedometer2"></i> <span id="downloadSpeed">0 KB/s</span></span>
+                        <span><i class="bi bi-hourglass-split"></i> <span id="downloadETA">--:--</span></span>
+                    </div>
+                </div>
+
+                <!-- Download button -->
+                <button class="download-btn primary" id="downloadBtn">
+                    <i class="bi bi-download"></i>
+                    <span id="btnText">Download File</span>
+                </button>
+
+                <!-- Copy link button -->
+                <button class="download-btn secondary mt-2" id="copyLinkBtn">
+                    <i class="bi bi-link-45deg"></i>
+                    Copy Link
+                </button>
+            </div>
+
+            <div class="footer">
+                <p>Powered by Easy Cloud • Secure & Encrypted</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== CONFIGURATION ====================
+        let WORKER_URL = localStorage.getItem('easycloudWorkerUrl') || '';
+        
+        // Get Worker URL from URL param if not set
+        const urlParams = new URLSearchParams(window.location.search);
+        const fileId = urlParams.get('id');
+        const workerParam = urlParams.get('worker');
+        
+        if (workerParam) {
+            WORKER_URL = workerParam;
+        }
+        
+        if (!WORKER_URL) {
+            WORKER_URL = window.location.origin;
+        }
+
+        // Remove trailing slash
+        WORKER_URL = WORKER_URL.replace(/\/$/, '');
+
+        // ==================== STATE ====================
+        let fileInfo = null;
+        let downloading = false;
+        let downloadedChunks = [];
+        let totalChunks = 0;
+        let downloadStartTime = 0;
+        let downloadedBytes = 0;
+        let currentSpeed = 0;
+
+        // ==================== DOM ELEMENTS ====================
+        const loadingState = document.getElementById('loadingState');
+        const downloadContent = document.getElementById('downloadContent');
+        const errorBanner = document.getElementById('errorBanner');
+        const errorMessage = document.getElementById('errorMessage');
+        const previewBox = document.getElementById('previewBox');
+        const fileIcon = document.getElementById('fileIcon');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
+        const modeBadge = document.getElementById('modeBadge');
+        const progressSection = document.getElementById('progressSection');
+        const mainProgress = document.getElementById('mainProgress');
+        const chunkStatus = document.getElementById('chunkStatus');
+        const progressPercent = document.getElementById('progressPercent');
+        const downloadSpeed = document.getElementById('downloadSpeed');
+        const downloadETA = document.getElementById('downloadETA');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const btnText = document.getElementById('btnText');
+        const copyLinkBtn = document.getElementById('copyLinkBtn');
+
+        // ==================== INITIALIZATION ====================
+        async function init() {
+            if (!fileId) {
+                showError('No file ID provided');
+                return;
+            }
+
+            await loadFileInfo();
+        }
+
+        async function loadFileInfo() {
+            try {
+                const response = await fetch(`${WORKER_URL}/get_file_info?id=${encodeURIComponent(fileId)}`);
+                const data = await response.json();
+
+                if (!data.success) {
+                    showError(data.error || 'File not found or has been deleted');
+                    return;
+                }
+
+                fileInfo = data;
+                displayFileInfo(data);
+
+                // If direct upload and previewable, auto-download for certain types
+                if (data.mode === 'direct' && isPreviewable(data.type)) {
+                    window.location.href = `${WORKER_URL}/download?id=${fileId}&direct=1`;
+                }
+            } catch (error) {
+                console.error('Error loading file info:', error);
+                showError('Failed to load file information. Please try again.');
+            }
+        }
+
+        function displayFileInfo(info) {
+            loadingState.style.display = 'none';
+            downloadContent.style.display = 'block';
+
+            fileName.textContent = info.name;
+            fileSize.textContent = formatSize(info.size);
+            
+            if (info.mode === 'direct') {
+                modeBadge.textContent = 'Direct Upload';
+                modeBadge.className = 'badge direct';
+            } else {
+                modeBadge.textContent = 'Chunked Upload';
+                modeBadge.className = 'badge chunked';
+                totalChunks = info.chunkCount || 0;
+                initChunkStatus();
+            }
+
+            // Show preview based on file type
+            updatePreview(info);
+
+            // Reset progress section for chunked files
+            if (info.mode === 'chunked') {
+                progressSection.style.display = 'block';
+            }
+
+            // Update download button
+            if (info.mode === 'direct') {
+                downloadBtn.onclick = directDownload;
+            } else {
+                downloadBtn.onclick = startChunkedDownload;
+            }
+
+            // Copy link functionality
+            copyLinkBtn.onclick = copyShareLink;
+        }
+
+        function updatePreview(info) {
+            previewBox.innerHTML = '';
+
+            if (info.mode === 'direct' && info.type.startsWith('image/')) {
+                const img = document.createElement('img');
+                img.src = `${WORKER_URL}/download?id=${fileId}`;
+                img.alt = info.name;
+                previewBox.appendChild(img);
+            } else if (info.mode === 'direct' && info.type.startsWith('video/')) {
+                const video = document.createElement('video');
+                video.src = `${WORKER_URL}/download?id=${fileId}`;
+                video.controls = true;
+                video.muted = true;
+                previewBox.appendChild(video);
+            } else if (info.mode === 'direct' && info.type.startsWith('audio/')) {
+                const audio = document.createElement('audio');
+                audio.src = `${WORKER_URL}/download?id=${fileId}`;
+                audio.controls = true;
+                audio.style.width = '100%';
+                previewBox.appendChild(audio);
+            } else {
+                previewBox.innerHTML = getFileIcon(info.type, info.name);
+            }
+        }
+
+        function getFileIcon(type, name) {
+            if (type?.startsWith('image/')) {
+                return '<i class="bi bi-file-earmark-image icon"></i>';
+            } else if (type?.startsWith('video/')) {
+                return '<i class="bi bi-file-earmark-play icon"></i>';
+            } else if (type?.startsWith('audio/')) {
+                return '<i class="bi bi-file-earmark-music icon"></i>';
+            } else if (type?.includes('pdf')) {
+                return '<i class="bi bi-file-earmark-pdf icon"></i>';
+            } else if (type?.includes('zip') || type?.includes('rar') || type?.includes('7z')) {
+                return '<i class="bi bi-file-earmark-zip icon"></i>';
+            } else if (type?.includes('text')) {
+                return '<i class="bi bi-file-earmark-text icon"></i>';
+            } else if (type?.includes('word') || name?.endsWith('.doc') || name?.endsWith('.docx')) {
+                return '<i class="bi bi-file-earmark-word icon"></i>';
+            } else if (type?.includes('sheet') || type?.includes('excel') || name?.endsWith('.xls') || name?.endsWith('.xlsx')) {
+                return '<i class="bi bi-file-earmark-excel icon"></i>';
+            } else {
+                return '<i class="bi bi-file-earmark icon"></i>';
+            }
+        }
+
+        function initChunkStatus() {
+            chunkStatus.innerHTML = '';
+            for (let i = 0; i < Math.min(totalChunks, 50); i++) {
+                const block = document.createElement('div');
+                block.className = 'chunk-block';
+                block.dataset.chunk = i;
+                chunkStatus.appendChild(block);
+            }
+        }
+
+        function updateChunkStatus(index, status) {
+            // Scale index for display (max 50 blocks)
+            const displayIndex = Math.floor((index / totalChunks) * Math.min(totalChunks, 50));
+            const blocks = chunkStatus.querySelectorAll('.chunk-block');
+            if (blocks[displayIndex]) {
+                blocks[displayIndex].className = `chunk-block ${status}`;
+            }
+        }
+
+        function showError(message) {
+            loadingState.style.display = 'none';
+            downloadContent.style.display = 'block';
+            errorBanner.style.display = 'block';
+            errorMessage.textContent = message;
+            downloadBtn.disabled = true;
+            copyLinkBtn.disabled = true;
+        }
+
+        // ==================== DIRECT DOWNLOAD ====================
+        function directDownload() {
+            if (!fileInfo) return;
+
+            window.location.href = `${WORKER_URL}/download?id=${fileId}&direct=1`;
+            
+            btnText.textContent = 'Downloading...';
+            downloadBtn.disabled = true;
+            
+            setTimeout(() => {
+                btnText.textContent = 'Download File';
+                downloadBtn.disabled = false;
+            }, 3000);
+        }
+
+        // ==================== CHUNKED DOWNLOAD ====================
+        async function startChunkedDownload() {
+            if (downloading || !fileInfo) return;
+
+            downloading = true;
+            downloadedChunks = new Array(totalChunks).fill(null);
+            downloadedBytes = 0;
+            downloadStartTime = Date.now();
+            
+            btnText.textContent = 'Preparing...';
+            downloadBtn.disabled = true;
+            progressSection.style.display = 'block';
+
+            try {
+                await downloadAllChunks();
+                await mergeAndDownload();
+            } catch (error) {
+                console.error('Download failed:', error);
+                btnText.textContent = 'Retry';
+                downloadBtn.disabled = false;
+                downloading = false;
+                showToast('Download failed: ' + error.message);
+            }
+        }
+
+        async function downloadAllChunks() {
+            const chunks = fileInfo.chunks;
+            const concurrency = 4;
+            let completed = 0;
+
+            const downloadChunk = async (index) => {
+                const maxRetries = 5;
+                let retries = 0;
+
+                while (retries < maxRetries) {
+                    try {
+                        updateChunkStatus(index, 'downloading');
+                        
+                        const response = await fetch(`${WORKER_URL}/get_chunk?chunk_id=${chunks[index].file_id}`);
+                        
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+
+                        const chunk = await response.arrayBuffer();
+                        downloadedChunks[index] = chunk;
+                        downloadedBytes += chunk.byteLength;
+
+                        // Verify hash if available
+                        if (chunks[index].hash) {
+                            const computedHash = await sha256(chunk);
+                            if (computedHash !== chunks[index].hash) {
+                                throw new Error('Hash verification failed');
+                            }
+                        }
+
+                        updateChunkStatus(index, 'loaded');
+                        completed++;
+                        updateProgress(completed, chunks.length);
+
+                        return true;
+                    } catch (error) {
+                        retries++;
+                        if (retries < maxRetries) {
+                            await sleep(Math.pow(2, retries) * 1000); // Exponential backoff
+                        } else {
+                            updateChunkStatus(index, 'error');
+                            throw new Error(`Failed to download chunk ${index + 1}`);
+                        }
+                    }
+                }
+
+                return false;
+            };
+
+            // Download with concurrency
+            for (let i = 0; i < chunks.length; i += concurrency) {
+                const batch = chunks.slice(i, i + concurrency).map((_, idx) => downloadChunk(i + idx));
+                await Promise.all(batch);
+            }
+
+            btnText.textContent = 'Merging...';
+        }
+
+        async function mergeAndDownload() {
+            try {
+                const fileBlob = new Blob(downloadedChunks, { type: fileInfo.type });
+                const url = URL.createObjectURL(fileBlob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileInfo.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                URL.revokeObjectURL(url);
+
+                // Cleanup
+                mainProgress.style.width = '100%';
+                progressPercent.textContent = '100%';
+                btnText.textContent = '✓ Download Completed';
+                
+                setTimeout(() => {
+                    btnText.textContent = 'Download Again';
+                    downloadBtn.disabled = false;
+                    downloading = false;
+                }, 2000);
+
+            } catch (error) {
+                console.error('Merge failed:', error);
+                throw error;
+            }
+        }
+
+        function updateProgress(completed, total) {
+            const percent = Math.round((completed / total) * 100);
+            mainProgress.style.width = `${percent}%`;
+            progressPercent.textContent = `${percent}%`;
+            
+            // Calculate speed
+            const elapsed = (Date.now() - downloadStartTime) / 1000;
+            if (elapsed > 0) {
+                currentSpeed = downloadedBytes / elapsed;
+                downloadSpeed.textContent = formatSize(currentSpeed) + '/s';
+                
+                // Calculate ETA
+                const remainingBytes = (fileInfo.size - downloadedBytes);
+                const eta = remainingBytes / currentSpeed;
+                downloadETA.textContent = formatTime(eta);
+            }
+
+            // Update button text
+            btnText.textContent = `Downloading... ${percent}%`;
+        }
+
+        // ==================== COPY LINK ====================
+        function copyShareLink() {
+            const shareUrl = `${window.location.origin}${window.location.pathname}?id=${fileId}`;
+            
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(shareUrl).then(() => {
+                    showToast('Link copied to clipboard!');
+                }).catch(() => {
+                    fallbackCopy(shareUrl);
+                });
+            } else {
+                fallbackCopy(shareUrl);
+            }
+        }
+
+        function fallbackCopy(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            
+            try {
+                document.execCommand('copy');
+                showToast('Link copied to clipboard!');
+            } catch (err) {
+                showToast('Failed to copy link');
+            }
+            
+            document.body.removeChild(textarea);
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = 'position-fixed bottom-0 end-0 m-3 p-3';
+            toast.style.cssText = `
+                background: ${type === 'success' ? 'rgba(16, 185, 129, 0.9)' : 'rgba(239, 68, 68, 0.9)'};
+                color: white;
+                border-radius: 12px;
+                padding: 15px 25px;
+                z-index: 9999;
+                animation: slideIn 0.3s ease;
+            `;
+            toast.style.animation = 'slideIn 0.3s ease';
+            toast.textContent = message;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideOut 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        // ==================== UTILITIES ====================
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatTime(seconds) {
+            if (!isFinite(seconds) || seconds < 0) return '--:--';
+            
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            
+            if (hrs > 0) {
+                return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function isPreviewable(type) {
+            return type?.startsWith('image/') || type?.startsWith('video/') || type?.startsWith('audio/');
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function sha256(data) {
+            const buffer = new Uint8Array(data);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // Add CSS animations
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

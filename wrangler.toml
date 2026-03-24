@@ -1,14 +1,18 @@
-name = "easycloud"
+name = "easy-cloud"
 main = "worker.js"
 compatibility_date = "2024-01-01"
-compatibility_flags = ["nodejs_compat"]
 
+# KV namespace for storing file metadata
 [[kv_namespaces]]
-binding = "easycloud"
-id = "9a3d8edafc324885b99ab20b5b3619f0"
+binding = "kv"
+id = "YOUR_KV_NAMESPACE_ID"  # Replace with your actual KV namespace ID
+preview_id = "YOUR_PREVIEW_KV_ID"  # Optional: for preview environment
 
+# Environment variables (optional - can also set in worker.js)
 [vars]
-TELEGRAM_CHAT_ID = "7183111659"
+# TELEGRAM_BOT_TOKEN = "your_bot_token"
+# TELEGRAM_CHANNEL_ID = "your_channel_id"
 
-# Set BOT_TOKEN as a secret:
-# wrangler secret put BOT_TOKEN
+# Limits (adjust as needed)
+[limits]
+cpu_ms = 50  # CPU time limit per request
