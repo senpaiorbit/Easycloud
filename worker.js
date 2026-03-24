@@ -3,8 +3,8 @@
  * Telegram-based cloud storage system
  */
 
-const TELEGRAM_BOT_TOKEN = 'YOUR_BOT_TOKEN'; // Replace with your bot token
-const TELEGRAM_CHANNEL_ID = 'YOUR_CHANNEL_ID'; // Replace with your private channel ID
+const TELEGRAM_BOT_TOKEN = '8214031086:AAEDlY1VVTTv-FklSHl0sgFmi_k-T1IQbbs'; // Replace with your bot token
+const TELEGRAM_CHANNEL_ID = '-1003870812115'; // Replace with your private channel ID
 const CHUNK_SIZE = 20 * 1024 * 1024; // 20MB
 const MAX_RETRIES = 3;
 
